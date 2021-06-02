@@ -66,6 +66,7 @@ exec(char *path, char **argv)
   if((sp = allocuvm(pgdir, STACKTOP -2*PGSIZE, STACKTOP)) == 0) // new heap
     goto bad;
   clearpteu(pgdir, (char*)(STACKTOP - 2*PGSIZE));
+  curproc->num_user_pages = 1;
   sp = STACKTOP;
 
   // Push argument strings, prepare rest of stack in ustack.

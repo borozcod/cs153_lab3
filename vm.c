@@ -244,7 +244,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       kfree(mem);
       return 0;
     }
-    // cprintf("alloc %d\n", a);
+    cprintf("alloc %d\n", a);
   }
   return newsz;
 }
@@ -311,6 +311,19 @@ clearpteu(pde_t *pgdir, char *uva)
   *pte &= ~PTE_U;
 }
 
+// Set PTE_U on a page. Used to create an accesible
+// page to extend the user stack.
+void
+setpteu(pde_t *pgdir, char *uva)
+{
+  pte_t *pte;
+
+  pte = walkpgdir(pgdir, uva, 0);
+  if(pte == 0)
+    panic("setpteu");
+  *pte = (1) | PTE_U;
+}
+
 // Given a parent process's page table, create a copy
 // of it for a child.
 pde_t*
@@ -331,7 +344,7 @@ copyuvm(pde_t *pgdir, uint sz)
       panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    // cprintf("copy %d\n", i);
+    cprintf("copy %d\n", i);
     if((mem = kalloc()) == 0)
       goto bad;
     memmove(mem, (char*)P2V(pa), PGSIZE);
@@ -340,14 +353,14 @@ copyuvm(pde_t *pgdir, uint sz)
   }
 
   for(i = STACKTOP -2*PGSIZE+1; i <= STACKTOP; i += PGSIZE){
-    // cprintf("second loop copy %d\n", i);
+    cprintf("second loop copy %d\n", i);
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
       panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    // cprintf("copy %d\n", i);
+    cprintf("copy %d\n", i);
     if((mem = kalloc()) == 0)
       goto bad;
     memmove(mem, (char*)P2V(pa), PGSIZE);

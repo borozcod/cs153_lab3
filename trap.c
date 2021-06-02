@@ -36,6 +36,7 @@ idtinit(void)
 void
 trap(struct trapframe *tf)
 {
+  uint sp;
   if(tf->trapno == T_SYSCALL){
     if(myproc()->killed)
       exit();
@@ -48,9 +49,27 @@ trap(struct trapframe *tf)
 
   switch(tf->trapno){
   case T_PGFLT:;
-    uint offending_addr = rcr2();
-    cprintf("%d\n", offending_addr);
-    panic("Panic stack too small");
+    uint offending_addr = PGROUNDUP(rcr2());
+    cprintf("stack top proc %d\n", myproc()->st);
+    cprintf("offending address %d\n", offending_addr);
+    //determine how many pages in user stack and where page guard begins
+    cprintf("Number of pages %d\n", myproc()->num_user_pages);
+    uint page_guard_start = myproc()->st - myproc()->num_user_pages*PGSIZE;
+    uint page_guard_end = page_guard_start - PGSIZE;
+    cprintf("Page guard start %d\n", page_guard_start);//start
+    cprintf("Page guard end %d\n", page_guard_end);//end
+    if(offending_addr < page_guard_start && offending_addr > page_guard_end){//STACKTOP to STACKTOP - 1*PGSIZE is he userstack, STACKTOP -1*PGSIZE to STACKTOP-2*PGSIZE is the page guard
+      cprintf("Increased stack size\n");
+      //call allocuvm to allocate another page below the old page guard
+      //if succeded set PTE_U flag for old page guard, and call clearpteu on new allocated page
+      if((sp = allocuvm(myproc()->pgdir, page_guard_end, page_guard_end - PGSIZE)) == 0)
+        panic("Panic allocuvm failed to allocate");
+      setpteu(myproc()->pgdir, (char*)(page_guard_end)); //set pte_u for old page guard
+      clearpteu(myproc()->pgdir, (char*)(page_guard_end - PGSIZE)); //clear pte_u for new page guard
+      myproc()->num_user_pages++;
+      // myproc()->sz = myproc()->sz + 4096;
+      // myproc()->tf->esp = sp;
+    }
     break;
   case T_IRQ0 + IRQ_TIMER:
     if(cpuid() == 0){
