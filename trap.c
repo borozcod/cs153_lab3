@@ -47,6 +47,11 @@ trap(struct trapframe *tf)
   }
 
   switch(tf->trapno){
+  case T_PGFLT:;
+    uint offending_addr = rcr2();
+    cprintf("%d\n", offending_addr);
+    panic("Panic stack too small");
+    break;
   case T_IRQ0 + IRQ_TIMER:
     if(cpuid() == 0){
       acquire(&tickslock);
