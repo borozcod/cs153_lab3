@@ -1,0 +1,254 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..8d6e9be
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,16 @@
++*~
++_*
++*.o
++*.d
++*.asm
++*.sym
++*.img
++vectors.S
++bootblock
++entryother
++initcode
++initcode.out
++kernel
++kernelmemfs
++mkfs
++.gdbinit
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index 2d2b9e4..839fb2d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -177,6 +177,8 @@ UPROGS=\
+ 	_zombie\
+ 	_shm_cnt\
+ 	_null\
++	_lab3\
++	_lab3_test\
+ 
+ fs.img: mkfs README $(UPROGS)
+ 	./mkfs fs.img README $(UPROGS)
+diff --git a/exec.c b/exec.c
+index b40134f..5f0ecf3 100644
+--- a/exec.c
++++ b/exec.c
+@@ -63,10 +63,10 @@ exec(char *path, char **argv)
+   // Allocate two pages at the next page boundary.
+   // Make the first inaccessible.  Use the second as the user stack.
+   sz = PGROUNDUP(sz);
+-  if((sz = allocuvm(pgdir, sz, sz + 2*PGSIZE)) == 0)
++  if((sp = allocuvm(pgdir, STACKTOP -2*PGSIZE, STACKTOP)) == 0) // new heap
+     goto bad;
+-  clearpteu(pgdir, (char*)(sz - 2*PGSIZE));
+-  sp = sz;
++  clearpteu(pgdir, (char*)(STACKTOP - 2*PGSIZE));
++  sp = STACKTOP;
+ 
+   // Push argument strings, prepare rest of stack in ustack.
+   for(argc = 0; argv[argc]; argc++) {
+@@ -97,6 +97,7 @@ exec(char *path, char **argv)
+   oldpgdir = curproc->pgdir;
+   curproc->pgdir = pgdir;
+   curproc->sz = sz;
++  curproc->st = STACKTOP;
+   curproc->tf->eip = elf.entry;  // main
+   curproc->tf->esp = sp;
+   switchuvm(curproc);
+@@ -111,4 +112,4 @@ exec(char *path, char **argv)
+     end_op();
+   }
+   return -1;
+-}
++}
+\ No newline at end of file
+diff --git a/lab3.c b/lab3.c
+new file mode 100644
+index 0000000..300fbc2
+--- /dev/null
++++ b/lab3.c
+@@ -0,0 +1,10 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++int main (int argc, char **argv)
++{
++    int v = argc;
++    printf(1, "%p\n", &v);
++    exit();
++}
+\ No newline at end of file
+diff --git a/lab3_test.c b/lab3_test.c
+new file mode 100644
+index 0000000..785969c
+--- /dev/null
++++ b/lab3_test.c
+@@ -0,0 +1,31 @@
++#include "types.h"
++#include "user.h"
++
++// Prevent this function from being optimized, which might give it closed form
++#pragma GCC push_options
++#pragma GCC optimize ("O0")
++static int
++recurse(int n)
++{
++  if(n == 0)
++    return 0;
++  return n + recurse(n - 1);
++}
++#pragma GCC pop_options
++
++int
++main(int argc, char *argv[])
++{
++  int n, m;
++
++  if(argc != 2){
++    printf(1, "Usage: %s levels\n", argv[0]);
++    exit();
++  }
++
++  n = atoi(argv[1]);
++  printf(1, "Lab 3: Recursing %d levels\n", n);
++  m = recurse(n);
++  printf(1, "Lab 3: Yielded a value of %d\n", m);
++  exit();
++}
+\ No newline at end of file
+diff --git a/memlayout.h b/memlayout.h
+index 70c1968..b309957 100644
+--- a/memlayout.h
++++ b/memlayout.h
+@@ -6,6 +6,7 @@
+ 
+ // Key addresses for address space layout (see kmap in vm.c for layout)
+ #define KERNBASE 0x80000000         // First kernel virtual address
++#define STACKTOP 0x7FFFFFFF // KERNBASE - 1
+ #define KERNLINK (KERNBASE+EXTMEM)  // Address where kernel is linked
+ 
+ #define V2P(a) (((uint) (a)) - KERNBASE)
+diff --git a/proc.c b/proc.c
+index 806b1b1..482c3dc 100644
+--- a/proc.c
++++ b/proc.c
+@@ -130,6 +130,7 @@ userinit(void)
+     panic("userinit: out of memory?");
+   inituvm(p->pgdir, _binary_initcode_start, (int)_binary_initcode_size);
+   p->sz = PGSIZE;
++  p->st = STACKTOP;
+   memset(p->tf, 0, sizeof(*p->tf));
+   p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
+   p->tf->ds = (SEG_UDATA << 3) | DPL_USER;
+diff --git a/proc.h b/proc.h
+index 1647114..d24fe84 100644
+--- a/proc.h
++++ b/proc.h
+@@ -37,6 +37,7 @@ enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+ // Per-process state
+ struct proc {
+   uint sz;                     // Size of process memory (bytes)
++  uint st;                     // Stack top
+   pde_t* pgdir;                // Page table
+   char *kstack;                // Bottom of kernel stack for this process
+   enum procstate state;        // Process state
+diff --git a/syscall.c b/syscall.c
+index 94ef3c9..4f1f11d 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -17,9 +17,7 @@
+ int
+ fetchint(uint addr, int *ip)
+ {
+-  struct proc *curproc = myproc();
+-
+-  if(addr >= curproc->sz || addr+4 > curproc->sz)
++  if(addr >= STACKTOP || addr+4 > STACKTOP)
+     return -1;
+   *ip = *(int*)(addr);
+   return 0;
+@@ -32,12 +30,11 @@ int
+ fetchstr(uint addr, char **pp)
+ {
+   char *s, *ep;
+-  struct proc *curproc = myproc();
+ 
+-  if(addr >= curproc->sz)
++  if(addr >= STACKTOP)
+     return -1;
+   *pp = (char*)addr;
+-  ep = (char*)curproc->sz;
++  ep = (char*)STACKTOP;
+   for(s = *pp; s < ep; s++){
+     if(*s == 0)
+       return s - *pp;
+@@ -59,11 +56,10 @@ int
+ argptr(int n, char **pp, int size)
+ {
+   int i;
+-  struct proc *curproc = myproc();
+  
+   if(argint(n, &i) < 0)
+     return -1;
+-  if(size < 0 || (uint)i >= curproc->sz || (uint)i+size > curproc->sz)
++  if(size < 0 || (uint)i >= STACKTOP || (uint)i+size > STACKTOP)
+     return -1;
+   *pp = (char*)i;
+   return 0;
+diff --git a/trap.c b/trap.c
+index 41c66eb..b42c07a 100644
+--- a/trap.c
++++ b/trap.c
+@@ -47,6 +47,11 @@ trap(struct trapframe *tf)
+   }
+ 
+   switch(tf->trapno){
++  case T_PGFLT:;
++    uint offending_addr = rcr2();
++    cprintf("%d\n", offending_addr);
++    panic("Panic: Page fault");
++    break;
+   case T_IRQ0 + IRQ_TIMER:
+     if(cpuid() == 0){
+       acquire(&tickslock);
+diff --git a/vm.c b/vm.c
+index f623aa3..8c8234f 100644
+--- a/vm.c
++++ b/vm.c
+@@ -322,6 +322,8 @@ copyuvm(pde_t *pgdir, uint sz)
+ 
+   if((d = setupkvm()) == 0)
+     return 0;
++
++  //Copy code->heap
+   for(i = 0; i < sz; i += PGSIZE){
+     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+       panic("copyuvm: pte should exist");
+@@ -335,6 +337,21 @@ copyuvm(pde_t *pgdir, uint sz)
+     if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0)
+       goto bad;
+   }
++
++  //Copy user stack
++  for(i = STACKTOP -2*PGSIZE+1; i <= STACKTOP; i += PGSIZE){
++    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
++      panic("copyuvm: pte should exist");
++    if(!(*pte & PTE_P))
++      panic("copyuvm: page not present");
++    pa = PTE_ADDR(*pte);
++    flags = PTE_FLAGS(*pte);
++    if((mem = kalloc()) == 0)
++      goto bad;
++    memmove(mem, (char*)P2V(pa), PGSIZE);
++    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0)
++      goto bad;
++  }
+   return d;
+ 
+ bad:
